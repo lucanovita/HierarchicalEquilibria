@@ -1,0 +1,461 @@
+using Plots
+using Oscar
+using Optim
+using ForwardDiff
+using Polyhedra
+using MeshCat
+using Colors
+using GeometryBasics
+using DelimitedFiles
+
+##################################################################################################
+function RingParameters(facets, players)
+    paramFF = []
+    for F in facets 
+        paramF = ()
+        for i in F
+            paramF = (paramF...,1:players[i])
+        end 
+        paramFF = push!(paramFF, paramF)
+    end
+    
+    indexes = ()
+    for i in 1:length(players)
+        indexes = (indexes...,1:players[i])
+    end
+    parameter_ring, gens= polynomial_ring(QQ, "q" => indexes, ["t_F$(i)" => paramFF[i] for i in 1:length(facets)]...) # the three dots unpack the vector so that the function sees it as positional separeted arguments
+    return [parameter_ring,gens]
+end 
+
+
+#################################################################################
+#################################################################################
+
+function select_parameter(combination, facets)
+   appearing_vars = []
+   for i in 1:length(facets)
+        aux = []
+        for j in facets[i]
+            aux = push!(aux,j)
+        end
+        selectedValues = [combination[k] for k in aux]
+        appearing_vars = push!(appearing_vars, "t_F$(i)$(selectedValues)")
+        
+   end
+   return appearing_vars
+end
+
+print(select_parameter([1,2,1],[[1,2],[2,3],[1,3]]))
+##################################################################################################
+##################################################################################################
+
+get_combinationss(players) = collect.(vec(Tuple.(CartesianIndices(Tuple(players)))))
+get_combinationss([2,2,2])
+
+######################################################################################################
+#####################################################################################################
+
+function hier_param(facets, players)
+    R, gen = RingParameters(facets, players)
+    D = Dict(string(v) => v for v in gens(R))
+    comb = get_combinationss(players)
+    equations = []
+    for c in comb 
+        eq = D["q$(c)"] - prod([D[z] for z in select_parameter(c,facets)])
+        equations = push!(equations,eq)
+    end
+
+    return [R,equations]
+     
+end
+
+
+
+function hier_ideal(facets,players)
+    o = hier_param(facets,players)
+    R = o[1]
+    equations = o[2]
+    I = ideal(R,equations)
+    get_rid = [gens(R)[i] for i in (prod(players) + 1):length(gens(R))]
+    I = Oscar.eliminate(I, get_rid)
+    gens_I = gens(I)
+    return gens_I
+end
+
+print(hier_ideal([[1,2],[2,3],[1,3]],[2,2,2]))
+
+#################################################################################################
+
+
+#this function will take a symbolic polynomial and return a corresponding function
+function polyToPoly(sym_p)
+    string_poly = string(sym_p)
+    mapping = [
+        "p[1, 1, 1]" => "v[1]",
+        "p[1, 1, 2]" => "v[2]",
+        "p[1, 2, 1]" => "v[3]",
+        "p[1, 2, 2]" => "v[4]",
+        "p[2, 1, 1]" => "v[5]",
+        "p[2, 1, 2]" => "v[6]",
+        "p[2, 2, 1]" => "v[7]",
+        "p[2, 2, 2]" => "v[8]",
+    ]
+    for (old, new) in mapping
+        string_poly = replace(string_poly, old => new)
+    end 
+    parsed_expr = Meta.parse(string_poly)
+    poly = eval(:(v -> $parsed_expr))
+end 
+
+###################################################
+function payoff_proj(v, Game)
+    p1 = 0
+    p2 = 0
+    p3 = 0 
+    counter = 0
+    for i in 1:2
+        for j in 1:2
+            for k in 1:2
+                counter = counter + 1
+                p1 = p1 + Game[1][i,j,k]*v[counter]
+                p2 = p2 + Game[2][i,j,k]*v[counter]
+                p3 = p3 + Game[3][i,j,k]*v[counter]
+                
+            end
+        end
+    end
+    return [p1,p2,p3]
+end
+
+
+function randomGame(min, max)
+    X1 = zeros(QQ,2,2,2)
+    X2 = zeros(QQ,2,2,2)
+    X3 = zeros(QQ,2,2,2)
+    for i in 1:2
+        for j in 1:2
+            for k in 1:2
+                X1[i,j,k] = rand(min:max)
+                X2[i,j,k] = rand(min:max)
+                X3[i,j,k] = rand(min:max)
+            end 
+        end 
+    end
+    print(X1)
+    print(X2)
+    print(X3)
+    return [X1, X2, X3] 
+end
+
+function define_game()
+    X1 = zeros(QQ,2,2,2)
+    X2 = zeros(QQ,2,2,2)
+    X3 = zeros(QQ,2,2,2)
+    X = [X1, X2, X3]
+    for i in 1:3
+        print("Define payoff for player 1 : ")
+        for j in 1:2
+            for k in 1:2
+                for z in 1:2
+                    print("Enter X$(i)[$(j) $(k) $(z)]")
+                    input_str = readline()
+                    X[i][j,k,z] = QQ(parse(Int,input_str))
+                end 
+            end 
+        end
+    end
+
+    return X
+end
+
+
+#game 12 of paper
+function payoff_playerk(k)
+    X = zeros(QQ,2,2,2)
+    for i in 1:2
+        for j in 1:2
+            for l in 1:2
+                check = (sum([i,j,l]) - 3 <= 9/4)
+                if k == 1
+                   if i == 1
+                        X[i,j,l] = 0
+                   else
+                        if check
+                            X[i,j,l] = 1
+                        else
+                            X[i,j,l] = -1
+                        end
+                   end
+                   
+                elseif k ==2
+                    if j == 1
+                        X[i,j,l] = 0
+                    else
+                        if check
+                            X[i,j,l] = 1
+                        else
+                            X[i,j,l] = -1
+                        end
+                   end
+                    
+                elseif k==3
+                    if l == 1
+                        X[i,j,l] = 0
+                    else
+                        if check
+                            X[i,j,l] = 1
+                        else
+                            X[i,j,l] = -1
+                        end
+                   end
+
+                end
+            end
+        end
+    end
+    return X
+end
+function game12_34()
+    return [payoff_playerk(i) for i in 1:3]
+end 
+
+##################################################################################
+#the following functions are only for 222 games
+
+function spohn_row_ij(i,j, R, p, X) #i is a player, j is choice for player i
+    g = zero(R)
+    g1 = zero(R)
+    for k in 1:2
+        for l in 1:2
+            if i == 1
+                g = g + p[j,k,l]
+                g1 = g1 + X[j,k,l]*p[j,k,l]
+            elseif i == 2
+                g = g + p[k,j,l]
+                g1 = g1 + X[k,j,l]*p[k,j,l]
+            elseif i == 3
+                g = g + p[k,l,j]
+                g1 = g1 + X[k,l,j]*p[k,l,j]
+            end 
+        end 
+    end
+    return [g,g1]
+end 
+
+function spohnMatrix_i(i, R, p, Game)
+    r1 = spohn_row_ij(i,1,R,p,Game[i])
+    r2 =  spohn_row_ij(i,2,R,p,Game[i])
+    return matrix(R, [r1,r2])
+end 
+
+#######################################################################################
+
+
+function softmax(y)
+    ey = exp.(y .- maximum(y))
+    return ey ./ sum(ey)
+end
+
+function err_fun(z)
+    function a(y) 
+        v = softmax(y)
+        return sum(poly(v)^2 for poly in z) #constrains the optimizer to the prob simpl
+    end 
+    return a
+end
+
+function ApproxSolutions(n_samples, poly_system, tolerance)
+    count = 0
+    approx_sol = []
+    err = err_fun(poly_system)
+    while count < n_samples
+        n = 1000
+        vv = randn(8) 
+        #sum_vv = sum(vv[i] for i in 1:7)
+        #vv = push!(vv, (1 - sum_vv))
+        res = optimize(err, vv)
+        if Optim.minimum(res) < tolerance
+            push!(approx_sol, softmax(Optim.minimizer(res)))
+            count = count + 1
+        end
+    end
+    return approx_sol
+end
+
+function SpohnNotHier(spohn_points, hier_system, tolerance)
+    not_hierarchical = []
+    hierarchical = []
+    for p in spohn_points 
+        if sum(poly(p)^2 for poly in hier_system) > tolerance
+            not_hierarchical = push!(not_hierarchical,p)
+        else 
+            hierarchical = push!(hierarchical,p)
+        end
+    end
+    return [not_hierarchical, hierarchical]
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function GeneratorsVarieties(X, facets)
+    probabilityRing, p= graded_polynomial_ring(QQ, "p" => (1:2, 1:2, 1:2)) 
+    gensSpohn = [det(spohnMatrix_i(i, probabilityRing, p, X)) for i in 1:3]
+    SI = ideal(probabilityRing, gensSpohn)
+    SpohnDimension = Oscar.dim(SI)
+    gens_spohn = minimal_generating_set(SI)
+    hier_generators_q = hier_ideal(facets,[2,2,2]) #generator of hierarchical ideal in the q vars 
+    new_vars = vec(p) 
+    num_oldvars = length(gens(parent(hier_generators_q[1])))
+    for i in 1:(num_oldvars-prod([2,2,2]))
+        new_vars = push!(new_vars, zero(probabilityRing))
+    end
+    H = hom(parent(hier_generators_q[1]),probabilityRing,new_vars)
+    HierModel = ideal(probabilityRing, [H(hier_generators_q[z]) for z in 1:length(hier_generators_q)])
+    IntersectionIdeal = HierModel + SI
+    SpohnHierarchical = IntersectionIdeal
+
+    for i in 1:2
+        for j in 1:2
+            for k in 1:2
+                SpohnHierarchical = saturation(SpohnHierarchical, ideal(probabilityRing, p[i,j,k]))
+            end
+        end
+    end
+    SpohnHierarchical = saturation(SpohnHierarchical, ideal(probabilityRing,sum(p[i,j,k] for i in 1:2 for j in 1:2 for k in 1:2)))
+    SpohnHierarchicalDimension = Oscar.dim(SpohnHierarchical)
+    gens_hierarch = minimal_generating_set(SpohnHierarchical)
+    spohn_poly_system = [polyToPoly(gen) for gen in gens_spohn]
+    hierarch_poly_system = [polyToPoly(gen) for gen in gens_hierarch]
+    return [spohn_poly_system, hierarch_poly_system,SpohnDimension,SpohnHierarchicalDimension,Oscar.dim(HierModel)]
+
+end
+
+
+
+
+
+
+
+function PayoffRegion(generators, tolerance, num_samples)#optionRed, optionGreen)
+
+    approx_points = ApproxSolutions(num_samples, generators[1], tolerance)
+    approx_points_divided = SpohnNotHier(approx_points, generators[2], tolerance)
+    PayoffOfNotHierarchicalSpohn = [Point3f(payoff_proj(approx_points_divided[1][i], X)) for i in 1:length(approx_points_divided[1])]
+    PayoffOfHierarchicalSpohn = [Point3f(payoff_proj(approx_points_divided[2][i], X)) for i in 1:length(approx_points_divided[2])]
+    aiutoDesmos = [payoff_proj(z,X) for z in approx_points]
+    prob_vertices = []
+
+    for i in 1:8 
+        p = []
+        for j in 1:8
+            if i == j 
+                push!(p, 1)
+            else
+                push!(p,0)
+            end
+        end
+        push!(prob_vertices,p)
+    end
+
+    payoffvertices = [[BigFloat.(payoff_proj(j,X)[i]) for i in 1:3] for j in prob_vertices]
+    v = vrep(payoffvertices)
+    poly = Polyhedra.polyhedron(v)
+    poly_mesh = Polyhedra.Mesh(poly)
+    mat_poly = MeshLambertMaterial(color=RGBA(0.9, 0.2, 0.2, 0.3))
+    vis = Visualizer()
+    setobject!(vis, poly_mesh, mat_poly)
+
+    if (length(approx_points_divided[1]) > 0)
+        mat_Spohn_points = PointsMaterial(size=0.01)
+        points_color = fill(RGB(1.0,0.0,0.0), length(PayoffOfNotHierarchicalSpohn))
+        spohnVarietyPoints = PointCloud(PayoffOfNotHierarchicalSpohn,points_color)
+        setobject!(vis["spohnPoints"],   spohnVarietyPoints, mat_Spohn_points)
+    end 
+    if (length(approx_points_divided[2])> 0) 
+        points_color2 = fill(RGB(0.0,1.0,0.0), length(PayoffOfHierarchicalSpohn))
+        mat_hier_points = PointsMaterial(size=0.01)
+        HierVarietyPoints = PointCloud(PayoffOfHierarchicalSpohn,points_color2)
+        setobject!(vis["hierPoints"],   HierVarietyPoints, mat_hier_points)
+    end
+
+    open(vis)
+    return [vis, aiutoDesmos]
+end
+
+
+function KonstanzMatrix(game, ring)
+    n = length(game)
+    rows = []
+    v = gens(ring) #the variables will be x1...xn where xi is expected payoff for player i
+    for j in (1:n)
+        for choice_j in 1:2
+            current_row = []
+            for i in 1:2
+                for z in 1:2
+                    for k in 1:2
+                        if j == 1 && (choice_j == 1)
+                            if i == 1
+                                current_row = push!(current_row, v[j] - game[j][i,z,k])
+                            else
+                                current_row = push!(current_row, 0)
+                            end 
+                        end
+                        if j == 1 && (choice_j == 2)
+                            if i == 2
+                                current_row = push!(current_row, v[j] - game[j][i,z,k])
+                            else
+                                current_row = push!(current_row, 0)
+                            end 
+                        end
+                        if j == 2 && (choice_j == 1)
+                            if z == 1
+                                current_row = push!(current_row, v[j] - game[j][i,z,k])
+                            else
+                                current_row = push!(current_row, 0)
+                            end 
+                        end
+                        if j == 2 && (choice_j == 2)
+                            if z == 2
+                                current_row = push!(current_row, v[j] - game[j][i,z,k])
+                            else
+                                current_row = push!(current_row, 0)
+                            end 
+                        end
+                        if j == 3 && (choice_j == 1)
+                            if k == 1
+                                current_row = push!(current_row, v[j] - game[j][i,z,k])
+                            else
+                                current_row = push!(current_row, 0)
+                            end 
+                        end
+                        if j == 3 && (choice_j == 2)
+                            if k == 2
+                                current_row = push!(current_row, v[j] - game[j][i,z,k])
+                            else
+                                current_row = push!(current_row, 0)
+                            end 
+                        end
+                    end
+                end
+            end
+            rows = push!(rows, current_row)
+        end
+        
+    end 
+    return rows
+end
